@@ -1,0 +1,156 @@
+---
+title: "Prediction Assignment"
+author: "Amanda Salazar"
+date: "July 17, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+```
+
+# Prediction Assignment
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+
+The goal of this project is to predict the manner in which they did the exercise. 
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har
+
+
+
+## Data analysis
+
+### Reading the dataset
+
+The function _read.csv_ is applied in order to collect data. It just needs a slight modification to correctly translate all missing values.
+
+```{r read_data, echo=TRUE}
+data <- read.csv("pml-training.csv",
+                 na.strings = c("NA","","#DIV/0!"))
+print(dim(data))
+```
+
+There are 160 variables (including the one that is to be predicted) and 19622 observations.
+
+```{r sumario, echo=FALSE,eval=FALSE}
+summary(data)
+```
+
+On a first overview, it shows up that this dataset is raw and it needs to be cleaned up.
+
+### Cleaning data
+
+#### Choosing variables
+First of all, columns _cvtd_timestamp_ and _new_window_ need to be correctly formatted. Data from _cvtd_timestamp_ is of class datetime, and _new_window_ is a binary variable, but they were both read as character by the _read.csv_ function formatter.
+
+```{r formatting, echo=TRUE}
+data$cvtd_timestamp<-as.POSIXct(data$cvtd_timestamp,format="%d/%m/%Y %H:%M")
+data$new_window <- data$new_window=="yes"
+```
+
+Also, there are some columns that are completely empty, so they must be removed.
+```{r empty, echo=TRUE}
+names(data)[which(colSums(!is.na(data))==0)]
+
+```
+
+ Actually, all columns that have less than a 5% of the data in the training set are going to be removed, since they have no variability enough to become relevant for the issue.
+
+```{r removed, echo=TRUE}
+removed_col <- names(data)[which(colSums(!is.na(data))<nrow(data)/20)]
+data <- data %>% select(-removed_col)
+length(removed_col)
+```
+
+It is needed to select which columns are related to the target. Before going into data exploration, it is easy to tell that first two columns (referred to index number and user name) are of no use for prediction, so they should be removed. Also, using some meta-knoledge, the way one performs barbell lifts is not related to the date. Furthermore, if the experiment was programmed, the date may seem to provide some information, but it does not because the times were artificially chosen.
+
+```{r coldrop, echo=TRUE}
+data <- data %>% select(-c("X","user_name","raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp"))
+```
+
+After this, the remaining predicting variables are the ones related to windows (_new_window_ and _num_window_) and the ones related to sensors. There are four devices placed on arm, forearm, belt and dumbbell, each device has three sensors (accel,gyros and magnet) that measure five features, wich are roll, pitch, yaw, total acceleration and coordinates (x,y,z). This sums up 54 predicting variables.
+
+Coordinates are provided in cartesian form. However, spheric coordinates may be more usefull.
+
+#### Filtering
+
+Finally, to clean up data a sigma filtering method applied as it follows.
+
+```{r sigmafilter, echo=TRUE}
+
+n<-nrow(data)
+sigma <- 4
+
+for (variable in names(data)[-c(1,55)]) {
+
+  var_dev <- sd(data[,variable])
+  var_mean <- mean(data[,variable])
+
+  filtered <-data[[variable]] > var_mean+sigma*var_dev |
+                data[[variable]]<var_mean-sigma*var_dev
+  
+  data <- data[!filtered ,]
+}
+
+sprintf("%s%% of data filtered.",round((n-nrow(data))/n*100,2))
+```
+
+
+### Data exploration
+
+The _feature_plot_ function shows that observations for some variables are clearly clustered in two or more groups, while others are slightly remaind to normal distributions.
+
+```{r exploration, echo=TRUE}
+data_plot <- data %>% select(-matches('x$|y$|z$|new_window'))
+
+featurePlot(x=data_plot[,1:12] , y=as.factor(data_plot$classe),plot="density", scales=list(x=list(relation="free"), y=list(relation="free")), auto.key=list(columns=5))
+
+```
+
+
+
+## Training
+
+Before training a model, it is needed a data partition. Training set is going to be a 60% of the dataset, while validation is a 40%. There is a second dataset containing the test data, that will only be used once a model is selected.
+
+```{r partition, echo=TRUE}
+set.seed(1123)
+
+data_partition <- createDataPartition(y=data$classe, p = 0.6,list=F)
+
+validation <- data[-data_partition,]
+training <- data[data_partition,]
+```
+
+Once there is a partition, a Random Forest will be trained.
+```{r randomforest, echo=TRUE}
+set.seed(5813)
+
+mod1 <- train(classe ~.,method="rf",data=training)
+pred1 <- predict(mod1,newdata=validation)
+
+confusionMatrix(pred1,as.factor(validation$classe))
+```
+
+Since Random Forest model seems super good, there is no need to train other methods.
+
+## Validation
+
+The last step is just applying the model to the test dataset.
+
+```{r validation, echo=TRUE}
+test <- read.csv("pml-testing.csv",
+                 na.strings = c("NA","","#DIV/0!"))
+test$new_window <- test$new_window=="yes"
+prediction_result <- data.frame(prediction=predict(mod1,newdata=test))
+
+print(prediction_result)
+```
+
+
+## Conclusions
+
+The model looks too good to be true. This amazing forecast may be explained by looking at the data nature. Observations were taken at the same sessions, many rows in the training dataset come several 	measurements in a few seconds, so they are all from the same movement and therefore they are very simmilar. When a random validation set is defined, the observations selected for validation will always have "twin" data in the training set and that is why the forecast is so good.
